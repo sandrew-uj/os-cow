@@ -6,6 +6,8 @@
 #include "spinlock.h"
 #include "proc.h"
 
+extern char end[];
+
 uint64 sys_exit(void) {
   int n;
   argint(0, &n);
@@ -28,8 +30,18 @@ uint64 sys_sbrk(void) {
   int n;
 
   argint(0, &n);
-  addr = myproc()->sz;
-  if (growproc(n) < 0) return -1;
+  struct proc *p = myproc();
+  addr = p->sz;
+
+  p->sz += n;
+  if (n < 0) {
+    uint64 n1 = -n;
+    if (n1 > addr) {
+      p->sz = 0;
+    }
+    uvmdealloc(p->pagetable, addr, p->sz);
+  }
+
   return addr;
 }
 

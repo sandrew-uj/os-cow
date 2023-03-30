@@ -77,9 +77,9 @@ void copyout(char *s) {
   for (int ai = 0; ai < 2; ai++) {
     uint64 addr = addrs[ai];
 
-    int fd = open("README", 0);
+    int fd = open("xv6-readme", 0);
     if (fd < 0) {
-      printf("open(README) failed\n");
+      printf("open(xv6-readme) failed\n");
       exit(1);
     }
     int n = read(fd, (void *)addr, 8192);
@@ -256,7 +256,7 @@ void rwsbrk() {
   close(fd);
   unlink("rwsbrk");
 
-  fd = open("README", O_RDONLY);
+  fd = open("xv6-readme", O_RDONLY);
   if (fd < 0) {
     printf("open(rwsbrk) failed\n");
     exit(1);
@@ -1793,7 +1793,7 @@ void dirfile(char *s) {
     printf("%s: unlink dirfile/xx succeeded!\n", s);
     exit(1);
   }
-  if (link("README", "dirfile/xx") == 0) {
+  if (link("xv6-readme", "dirfile/xx") == 0) {
     printf("%s: link to dirfile/xx succeeded!\n", s);
     exit(1);
   }
@@ -1831,7 +1831,7 @@ void iref(char *s) {
     }
 
     mkdir("");
-    link("README", "");
+    link("xv6-readme", "");
     fd = open("", O_CREATE);
     if (fd >= 0) close(fd);
     fd = open("xx", O_CREATE);

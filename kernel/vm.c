@@ -3,6 +3,8 @@
 #include "memlayout.h"
 #include "elf.h"
 #include "riscv.h"
+#include "spinlock.h"
+#include "proc.h"
 #include "defs.h"
 #include "fs.h"
 
@@ -149,8 +151,8 @@ void uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free) {
   if ((va % PGSIZE) != 0) panic("uvmunmap: not aligned");
 
   for (a = va; a < va + npages * PGSIZE; a += PGSIZE) {
-    if ((pte = walk(pagetable, a, 0)) == 0) panic("uvmunmap: walk");
-    if ((*pte & PTE_V) == 0) panic("uvmunmap: not mapped");
+    if ((pte = walk(pagetable, a, 0)) == 0) continue;
+    if ((*pte & PTE_V) == 0) continue;
     if (PTE_FLAGS(*pte) == PTE_V) panic("uvmunmap: not a leaf");
     if (do_free) {
       uint64 pa = PTE2PA(*pte);
@@ -242,6 +244,27 @@ void freewalk(pagetable_t pagetable) {
   kfree((void *)pagetable);
 }
 
+void pteprint(pagetable_t pagetable, int lvl) {
+  for (int i = 0; i < 512; ++i) {
+    pte_t pte = pagetable[i];
+    if (pte & PTE_V) {
+      uint64 pa = PTE2PA(pte);
+      for (int j = 0; j <= lvl; ++j) {
+        printf(" ..");
+      }
+      printf("%d: pte %p pa %p\n", i, pte, pa);
+      if ((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+        pteprint((pagetable_t)pa, lvl + 1);
+      }
+    }
+  }
+}
+
+void vmprint(pagetable_t pagetable) {
+  printf("page table %p\n", pagetable);
+  pteprint(pagetable, 0);
+}
+
 // Free user memory pages,
 // then free page-table pages.
 void uvmfree(pagetable_t pagetable, uint64 sz) {
@@ -259,17 +282,19 @@ int uvmcopy(pagetable_t old, pagetable_t new, uint64 sz) {
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for (i = 0; i < sz; i += PGSIZE) {
-    if ((pte = walk(old, i, 0)) == 0) panic("uvmcopy: pte should exist");
-    if ((*pte & PTE_V) == 0) panic("uvmcopy: page not present");
+    if ((pte = walk(old, i, 0)) == 0) continue;
+    if ((*pte & PTE_V) == 0) continue;
     pa = PTE2PA(*pte);
+    if (*pte & PTE_W) {
+      *pte &= ~PTE_W;
+      *pte |= PTE_B;
+    }
     flags = PTE_FLAGS(*pte);
-    if ((mem = kalloc()) == 0) goto err;
-    memmove(mem, (char *)pa, PGSIZE);
-    if (mappages(new, i, PGSIZE, (uint64)mem, flags) != 0) {
-      kfree(mem);
+    inc_usage(pa);
+    if (mappages(new, i, PGSIZE, pa, flags) != 0) {
+      dec_usage(pa);
       goto err;
     }
   }
@@ -298,6 +323,10 @@ int copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len) {
 
   while (len > 0) {
     va0 = PGROUNDDOWN(dstva);
+    if (va0 >= MAXVA) return -1;
+    if (cowcopy(pagetable, va0, 0) == -1) {
+      return -1;
+    }
     pa0 = walkaddr(pagetable, va0);
     if (pa0 == 0) return -1;
     n = PGSIZE - (dstva - va0);
@@ -319,6 +348,10 @@ int copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len) {
 
   while (len > 0) {
     va0 = PGROUNDDOWN(srcva);
+    if (va0 >= MAXVA) return -1;
+    if (cowcopy(pagetable, va0, 0) == -1) {
+      return -1;
+    }
     pa0 = walkaddr(pagetable, va0);
     if (pa0 == 0) return -1;
     n = PGSIZE - (srcva - va0);
@@ -369,4 +402,59 @@ int copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max) {
   } else {
     return -1;
   }
+}
+
+int cowcopy(pagetable_t pagetable, uint64 va, int rtn) {
+  pte_t *pte;
+  uint64 pa;
+  uint flags;
+  char *mem;
+
+  if (va >= MAXVA) {
+    return -1;
+  }
+
+  if (((pte = walk(pagetable, va, 0)) != 0) && ((*pte & PTE_V) != 0) &&
+      ((*pte & PTE_B) == 0)) {
+    if (rtn < 0) goto err;
+    return rtn;
+  }
+  if ((mem = kalloc()) == 0) {
+    goto err;
+  }
+  if (pte == 0 || (*pte & PTE_V) == 0) {
+    struct proc *p = myproc();
+
+    if (p->sz <= va) {
+      kfree(mem);
+      goto err;
+    }
+
+    flags = PTE_W | PTE_R | PTE_X | PTE_U;
+
+    memset(mem, 0, PGSIZE);
+  } else {
+    pa = PTE2PA(*pte);
+    if (((uint64)pa % PGSIZE) != 0 || (uint64)pa >= PHYSTOP) {
+      kfree(mem);
+      goto err;
+    }
+
+    flags = PTE_FLAGS(*pte);
+    flags &= ~PTE_B;
+    flags |= PTE_W;
+
+    memmove(mem, (char *)pa, PGSIZE);
+    uvmunmap(pagetable, PGROUNDDOWN(va), 1, 1);
+  }
+
+  if (mappages(pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, flags) != 0) {
+    kfree(mem);
+    goto err;
+  }
+  return 0;
+
+err:
+  uvmunmap(pagetable, PGROUNDDOWN(va), 1, 1);
+  return -1;
 }

@@ -19,13 +19,40 @@ struct run {
 };
 
 struct {
+  uint64 *usage;
   struct spinlock lock;
   struct run *freelist;
 } kmem;
 
+int change_usage(uint64 pa, int k) {
+  int result, idx = get_idx(pa);
+  acquire(&kmem.lock);
+  if (kmem.usage[idx] == 0 && k < 0) {
+    panic("change_usage: usage zero");
+  }
+  kmem.usage[idx] += k;
+  result = kmem.usage[idx];
+  release(&kmem.lock);
+  return result;
+}
+
+int dec_usage(uint64 pa) { return change_usage(pa, -1); }
+
+void inc_usage(uint64 pa) { change_usage(pa, 1); }
+
 void kinit() {
+  uint64 addr = PGROUNDUP((uint64)end);
+  int pages = 0;
+  kmem.usage = (uint64 *)addr;
+
+  while (addr < PHYSTOP) {
+    kmem.usage[get_idx(addr)] = 1;
+    addr += PGSIZE;
+    pages++;
+  }
+
   initlock(&kmem.lock, "kmem");
-  freerange(end, (void *)PHYSTOP);
+  freerange(kmem.usage + pages, (void *)PHYSTOP);
 }
 
 void freerange(void *pa_start, void *pa_end) {
@@ -44,6 +71,8 @@ void kfree(void *pa) {
   if (((uint64)pa % PGSIZE) != 0 || (char *)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  if (dec_usage((uint64)pa) != 0) return;
+
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -60,10 +89,12 @@ void kfree(void *pa) {
 // Returns 0 if the memory cannot be allocated.
 void *kalloc(void) {
   struct run *r;
-
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if (r) kmem.freelist = r->next;
+  if (r) {
+    kmem.freelist = r->next;
+    kmem.usage[get_idx((uint64)r)]++;
+  }
   release(&kmem.lock);
 
   if (r) memset((char *)r, 5, PGSIZE);  // fill with junk

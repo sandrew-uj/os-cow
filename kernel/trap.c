@@ -39,7 +39,11 @@ void usertrap(void) {
   // save user program counter.
   p->trapframe->epc = r_sepc();
 
-  if (r_scause() == 8) {
+  if (r_scause() == 15 || r_scause() == 13) {
+    if (cowcopy(p->pagetable, r_stval(), -1) == -1) {
+      setkilled(p);
+    }
+  } else if (r_scause() == 8) {
     // system call
 
     if (killed(p)) exit(-1);

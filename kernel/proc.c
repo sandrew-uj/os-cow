@@ -231,6 +231,8 @@ int growproc(int n) {
   uint64 sz;
   struct proc *p = myproc();
 
+  printf("growproc\n");
+
   sz = p->sz;
   if (n > 0) {
     if ((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
@@ -367,13 +369,13 @@ int wait(uint64 addr) {
         if (pp->state == ZOMBIE) {
           // Found one.
           pid = pp->pid;
+          freeproc(pp);
           if (addr != 0 && copyout(p->pagetable, addr, (char *)&pp->xstate,
                                    sizeof(pp->xstate)) < 0) {
             release(&pp->lock);
             release(&wait_lock);
             return -1;
           }
-          freeproc(pp);
           release(&pp->lock);
           release(&wait_lock);
           return pid;
